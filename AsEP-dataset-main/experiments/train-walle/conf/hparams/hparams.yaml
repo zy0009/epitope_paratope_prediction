@@ -1,0 +1,47 @@
+model_type: "graph"
+
+train_batch_size: 32
+val_batch_size: 32
+test_batch_size: 32
+batch_size: ${.train_batch_size}
+max_epochs: 100
+
+pos_weight: 100.
+
+input_ab_dim: 512
+input_ag_dim: 480
+input_ab_act: "relu"      # ← 新增
+input_ag_act: "relu"      # ← 新增
+
+# LSTM
+seq_enc:
+  hidden: 256
+  layers: 2
+  dropout: 0.2
+  use_attn: true
+
+# GNN
+dim_list:
+  - 256
+  - 256
+act_list:
+  - "leakyrelu"
+
+encoder:
+  conv: "gcn"
+  dropout: 0.2
+  use_residual: true
+  use_layernorm: true
+  heads: 2
+
+cross_attention:
+  enable: true
+
+decoder:
+  name: "fc"
+  hidden: 256
+  dropout: 0.2
+  bias: True
+
+num_edge_cutoff: 3
+edge_cutoff: 0.5
