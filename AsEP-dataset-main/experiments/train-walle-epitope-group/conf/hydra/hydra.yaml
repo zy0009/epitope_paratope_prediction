@@ -1,2 +1,0 @@
-run:
-  dir: ./hydra_configs/${now:%Y%m%d-%H%M%S}
