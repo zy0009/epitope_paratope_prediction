@@ -1,3 +1,8 @@
+# A Unified Framework for Epitope and Paratope Prediction via Multimodal Contrastive Learning
+## Abstract
+Accurate prediction of antigenic epitopes and antibody paratopes is crucial for advancing vaccine design and therapeutic antibody development. However, sequence-based methods are limited by their inability to model long-range interactions, while structure-only models neglect essential evolutionary information. Moreover, many current multimodal models rely on simplistic fusion strategies that yield suboptimal alignment between sequence and structure, ultimately hindering predictive accuracy. To overcome these limitations, we propose a unified multimodal contrastive learning framework for accurate epitope and paratope prediction. Our model comprises two core components: a Hybrid Sequence Attention Encoder (HSAE) that processes ESM-3-derived embeddings through Transformer self-attention and gated hybrid pooling to capture long-range dependencies and global sequence context; and a Node-Edge Attention Graph Encoder (NEAGE) that operates on residue-level graphs constructed from experimentally resolved structures, using edge-aware attention aggregation to model local geometric and relational features. To explicitly align these two distinct modalities, we introduce a residue-level cross-modal contrastive learning objective that maps sequence and structural embeddings into a shared latent space, yielding discriminative and comprehensive residue embeddings. Extensive experiments on two benchmark datasets demonstrate that our method consistently outperforms state-of-the-art baselines across all evaluation metrics for both epitope and paratope prediction. Moreover, a case study on SARS-CoV-2 B-cell epitopes demonstrates that our model captures antigen–antibody interaction patterns more precisely, underscoring its potential for real-world applications in immunology and drug discovery. Our code and models are publicly available at https://github.com/zy0009/epitope_paratope_prediction.
+
+## Datasets
 Datasets can be downloaded from zenodo here: https://zenodo.org/record/3885236.
 
 The data format is the following:
@@ -17,8 +22,12 @@ The data format is the following:
 - - - r_hood_indices: same as l_hood_indices, but for secondary protein
 - - - label_r: same as label, but for secondary protein
 
-## Usage
+## Requirement
+- Python = 3.9.10
+- Pytorch = 1.10.2
+- Scikit-learn = 1.0.2
 
+## Usage
 All configurations are defined in `config.py`.
 
 To train the model, run:
