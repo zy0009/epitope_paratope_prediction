@@ -14,19 +14,13 @@ import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 def contrastive_loss(global_feat, local_feat, temperature=0.2):
-    """
-    计算全局特征和局部特征间的对比损失
-    """
-    # 计算相似度矩阵 [B, B]
     global_feat = F.normalize(global_feat, p=2, dim=1)
     local_feat = F.normalize(local_feat, p=2, dim=1)
     logits = torch.mm(global_feat, local_feat.T) / temperature
     
-    # 生成标签 (对角线为正样本)
     batch_size = global_feat.size(0)
     labels = torch.arange(batch_size).to(global_feat.device)
     
-    # 对称损失计算
     loss_global = F.cross_entropy(logits, labels)
     loss_local = F.cross_entropy(logits.T, labels)
     return (loss_global + loss_local) / 2
@@ -57,13 +51,13 @@ def train(model, train_graphs, val_graphs, num=1, re_train_start=0, b_loss=999):
     optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.8, weight_decay=weight_decay, nesterov=True)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, 
-        mode='min',        # 监控验证损失的最小化
-        factor=0.95,        # 学习率衰减系数（新lr = lr * factor）
-        patience=3,        # 容忍3个epoch无改善后调整
+        mode='min',      
+        factor=0.95,      
+        patience=3,        
     )
     loss_fn = WeightedCrossEntropy(neg_wt=neg_wt, device=device)
-    # 在训练循环中添加学习率跟踪
-    current_lr = optimizer.param_groups[0]['lr']  # 初始学习率
+
+    current_lr = optimizer.param_groups[0]['lr'] 
     model.train()
     train_losses = []
     val_losses = []
@@ -96,7 +90,6 @@ def train(model, train_graphs, val_graphs, num=1, re_train_start=0, b_loss=999):
                     end = label_size
                 optimizer.zero_grad()
                 
-                # 前向传播获取三个返回值
                 batch_pred, global_proj, local_proj = model(
                     train_ag_vertex, 
                     train_ag_edge, 
@@ -104,21 +97,16 @@ def train(model, train_graphs, val_graphs, num=1, re_train_start=0, b_loss=999):
                     train_ag_indices[start:end]
                 )
   
-                # 计算主任务损失
                 main_loss = loss_fn.computer_loss(batch_pred, train_ag_label[start:end])
                 
-                # 计算对比损失
                 contrast_loss = contrastive_loss(global_proj, local_proj)
 
                 contrast_weight = 0.3 * (1 - e / epochs)
-                # 总损失（权重可调）
                 total_loss = main_loss + contrast_weight * contrast_loss
                 
-                # 反向传播
                 total_loss.backward()
                 optimizer.step()
                 
-                # 记录损失
                 b_loss = total_loss.item()
                 g_loss += b_loss
             g_loss /= iters
@@ -141,7 +129,7 @@ def train(model, train_graphs, val_graphs, num=1, re_train_start=0, b_loss=999):
                 val_ag_indices = [index for index, _ in enumerate(val_g['label'])]
                 val_ag_indices = torch.LongTensor(val_ag_indices).cuda()
 
-            val_ag_label[:,1] = (val_ag_label[:,1] == 1).int()  # 转换 -1 为 0
+            val_ag_label[:,1] = (val_ag_label[:,1] == 1).int()  
             label_size = len(val_ag_label)
             iters = math.ceil(label_size / batch_size)
             g_loss = 0.
@@ -155,7 +143,6 @@ def train(model, train_graphs, val_graphs, num=1, re_train_start=0, b_loss=999):
                 # batch_pred = model(val_ag_vertex, val_ag_indices[start:end])
                 # batch_pred = model(val_ag_vertex, val_ag_nh_indices, val_ag_indices[start:end])
                 with torch.no_grad():
-                    # 只取主预测结果
                     batch_pred, global_proj, local_proj = model(
                         val_ag_vertex,
                         val_ag_edge,
@@ -182,7 +169,7 @@ def train(model, train_graphs, val_graphs, num=1, re_train_start=0, b_loss=999):
         prev_lr = current_lr 
         current_lr = optimizer.param_groups[0]['lr']
         if current_lr != prev_lr:
-            print(f'\n学习率已调整: {prev_lr} -> {current_lr}')
+            print(f'\nlr change: {prev_lr} -> {current_lr}')
 
 
 if __name__ == '__main__':

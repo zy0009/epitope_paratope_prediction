@@ -33,7 +33,7 @@ def test(model, test_graphs,i,mx_roc,mx_pr):
             test_ag_indices = [index for index, _ in enumerate(test_g['label'])]
             test_ag_indices = torch.LongTensor(test_ag_indices).cuda()
 
-        test_ag_label = (test_ag_label == 1).int()  # 转换 -1 为 0
+        test_ag_label = (test_ag_label == 1).int()  
         g_preds,u,v = model(test_ag_vertex, test_ag_edge, test_ag_nh_indices, test_ag_indices)
         g_preds = g_preds.data.cpu().numpy()
      

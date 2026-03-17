@@ -325,16 +325,13 @@ class BiLSTMGraphTransformerModel(nn.Module):
         out = self.linear2(out)
         # print(out)
 
-        # 全局特征和局部特征
         global_feat = global_out  # [B, 2*num_hidden]
         local_feat = local_out    # [B, hidden_dims[-1]]
         
-        # 拼接后输出主预测
         combined = torch.cat([global_feat, local_feat], dim=1)
         out = self.linear1(combined)
         out = self.linear2(out)
         
-        # 投影到对比空间
         global_proj = F.normalize(self.global_proj(global_feat), dim=1)
         local_proj = F.normalize(self.local_proj(local_feat), dim=1)
         
@@ -410,11 +407,9 @@ class BiLSTMNodeEdgeAverageModel(nn.Module):
         out = self.pred_head(out)
         # print(out)
 
-        # 全局特征和局部特征
         global_feat = global_out  # [B, 2*num_hidden]
         local_feat = local_out    # [B, hidden_dims[-1]]
         
-        # 投影到对比空间
         global_proj = F.normalize(self.global_proj(global_feat), dim=1)
         local_proj = F.normalize(self.local_proj(local_feat), dim=1)
         
