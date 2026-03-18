@@ -9,7 +9,6 @@ from config import DefaultConfig
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_curve, auc,silhouette_score
 import matplotlib.pyplot as plt
-from sklearn.manifold import TSNE
 import seaborn as sns
 import pandas as pd
 configs = DefaultConfig()
@@ -19,11 +18,8 @@ def test(model, test_graphs,i,mx_roc,mx_pr):
     model.eval()
     all_trues = []
     all_preds = []
-    print(mx_roc,mx_pr)
 
     mx = 0
-    comb = []
-    lab = []
     for test_g in test_graphs:
         if torch.cuda.is_available():
             test_ag_vertex = torch.FloatTensor(test_g['l_vertex']).cuda()
@@ -44,8 +40,6 @@ def test(model, test_graphs,i,mx_roc,mx_pr):
 
     all_trues = np.concatenate(all_trues, axis=0)
     all_preds = np.concatenate(all_preds, axis=0)
-    print(sum(all_trues))
-    print(len(all_preds))
     
     auc_roc = compute_auc_roc(all_trues, all_preds)
     auc_pr = compute_auc_pr(all_trues, all_preds)
