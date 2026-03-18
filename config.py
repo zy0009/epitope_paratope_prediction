@@ -12,10 +12,10 @@ class DefaultConfig(object):
     dropout_rate = 0.5
     batch_size = 32
     neg_wt = 0.1
-    # NodeAverage
+    # NEAGE
     hidden_dim = [256,512]
 
-    # BiLSTM
+    # HSAE
     num_hidden = 32
     num_layer = 1
     # mlp
