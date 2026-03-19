@@ -303,10 +303,9 @@ class BiLSTMGraphTransformerModel(nn.Module):
             nn.Dropout(dropout_rate)
         )
 
-        # 新增对比学习投影头
         self.global_proj = nn.Linear(2 * num_hidden, 128)
         self.local_proj = nn.Linear(self.hidden_dims[-1], 128)
-        self.temperature = 0.1  # 温度系数
+        self.temperature = 0.1  
 
     def forward(self, vertex, edge, nh_indices, indices):
         batch_size = len(indices)
@@ -383,10 +382,9 @@ class BiLSTMNodeEdgeAverageModel(nn.Module):
 
         self.linear1 = nn.Sequential( nn.Linear(self.hidden_dims[-1] + 2 * num_hidden, 512), nn.ReLU(), nn.Dropout(dropout_rate) ) 
         self.linear2 = nn.Sequential( nn.Linear(512, 1), nn.Dropout(dropout_rate) )
-        # 新增对比学习投影头
         self.global_proj = nn.Linear(2 * num_hidden, 128)
         self.local_proj = nn.Linear(self.hidden_dims[-1], 128)
-        self.temperature = 0.1  # 温度系数
+        self.temperature = 0.1  
 
     def forward(self, vertex, edge, nh_indices, indices):
         batch_size = len(indices)
