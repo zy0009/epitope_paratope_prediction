@@ -15,7 +15,7 @@ The proposed framework consists of four main components:
 
 ## Model Architecture
 
-![Architecture of the proposed framework](figures/architecture.png)
+![Architecture of the proposed framework](architecture.png)
 
 ## Visualization and Analysis
 
@@ -23,21 +23,21 @@ The proposed framework consists of four main components:
 
 The learned fused residue representations are visualized for epitope and paratope prediction. Red points denote binding residues, and blue-gray points denote non-binding residues.
 
-![t-SNE visualization](figures/tsne.png)
+![t-SNE visualization](tsne.png)
 
 ### Ablation Study
 
 The ablation results show the performance degradation of model variants relative to the full model.
 
-![Ablation study](figures/ablation.png)
+![Ablation study](ablation.png)
 
 ### SARS-CoV-2 Case Study
 
 The case study evaluates prediction performance across five SARS-CoV-2 B-cell epitope types and visualizes representative antigen-antibody binding interfaces.
 
-![SARS-CoV-2 case study performance](figures/case_study_performance.png)
+![SARS-CoV-2 case study performance](case_study_performance.png)
 
-![Binding visualization](figures/case_study_visualization.png)
+![Binding visualization](case_study_visualization.png)
 
 ## Repository Structure
 
