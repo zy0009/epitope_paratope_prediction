@@ -7,11 +7,11 @@ def compute_acc(labels, preds):
     return acc
 
 def compute_precision(labels,preds):
-    precision = precision_score(labels, preds)
+    precision = precision_score(labels, preds, zero_division=0)
     return precision
 
 def compute_recall(labels,preds):
-    recall = recall_score(labels,preds)
+    recall = recall_score(labels,preds, zero_division=0)
     return recall
 
 def compute_balanced_accuracy(labels,preds):
@@ -19,12 +19,16 @@ def compute_balanced_accuracy(labels,preds):
     return ba
 
 def compute_auc_roc(labels, preds):
+    if len(np.unique(labels)) < 2:
+        return np.nan
     fpr, tpr, _ = roc_curve(labels.flatten(), preds.flatten())
     auc_roc = auc(fpr, tpr)
     return auc_roc
 
 
 def compute_auc_pr(labels, preds):
+    if len(np.unique(labels)) < 2:
+        return np.nan
     p, r, _ = precision_recall_curve(labels.flatten(), preds.flatten())
     auc_pr = auc(r, p)
     return auc_pr
@@ -38,7 +42,7 @@ def compute_mcc(labels, preds):
 def computer_ss(labels, preds):
     labels = labels.flatten()
     preds = preds.flatten()
-    confusion = confusion_matrix(labels, preds)
+    confusion = confusion_matrix(labels, preds, labels=[0, 1])
     TP = confusion[1, 1]
     TN = confusion[0, 0]
     FP = confusion[0, 1]
@@ -89,5 +93,9 @@ def compute_performance(labels, preds):
                     r_max = r
                     t_max = local_threshold
                     predictions_max = predictions
+
+    if predictions_max is None:
+        predictions_max = (preds > 0.5).astype(np.int32)
+        t_max = 0.5
 
     return f_max, p_max, r_max, t_max, predictions_max

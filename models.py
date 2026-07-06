@@ -78,7 +78,7 @@ class NodeAverageModel(nn.Module):
         dropout_rate = configs.dropout_rate
         feature_dim = configs.feature_dim
         mlp_dim = configs.mlp_dim
-        self.hidden_dims = configs.hidden_dim
+        self.hidden_dims = configs.hidden_dim.copy()
         self.hidden_dims.insert(0, feature_dim)
         self.node_avers = nn.ModuleList([NodeAverageLayer(self.hidden_dims[i], self.hidden_dims[i + 1], dropout_rate)
                                          for i in range(len(self.hidden_dims[:-1]))])
@@ -110,7 +110,7 @@ class BiLSTMNodeAverageModel(nn.Module):
         dropout_rate = configs.dropout_rate
         feature_dim = configs.feature_dim
         mlp_dim = configs.mlp_dim
-        self.hidden_dims = configs.hidden_dim
+        self.hidden_dims = configs.hidden_dim.copy()
         self.hidden_dims.insert(0, feature_dim)
         self.bilstm = BiLSTMAttentionLayer(num_hidden, num_layer)
         self.node_avers = nn.ModuleList([NodeEdgeAttentionLayer(self.hidden_dims[i], self.hidden_dims[i + 1], dropout_rate)
@@ -145,7 +145,7 @@ class NodeEdgeAverageModel(nn.Module):
         dropout_rate = configs.dropout_rate
         feature_dim = configs.feature_dim
         mlp_dim = configs.mlp_dim
-        self.hidden_dims = configs.hidden_dim
+        self.hidden_dims = configs.hidden_dim.copy()
         self.hidden_dims.insert(0, feature_dim)
         self.nodeedge_avers = nn.ModuleList([NodeEdgeAverageLayer(self.hidden_dims[i], self.hidden_dims[i + 1], dropout_rate)
                                          for i in range(len(self.hidden_dims[:-1]))])
@@ -285,7 +285,7 @@ class BiLSTMGraphTransformerModel(nn.Module):
         num_layer = configs.num_layer
         dropout_rate = configs.dropout_rate
         feature_dim = configs.feature_dim
-        self.hidden_dims = configs.hidden_dim
+        self.hidden_dims = configs.hidden_dim.copy()
         self.hidden_dims.insert(0, feature_dim)
         self.bilstm = BiLSTMAttentionLayer(num_hidden, num_layer)
         self.node_edge_avers = nn.ModuleList([
@@ -303,9 +303,11 @@ class BiLSTMGraphTransformerModel(nn.Module):
             nn.Dropout(dropout_rate)
         )
 
-        self.global_proj = nn.Linear(2 * num_hidden, 128)
-        self.local_proj = nn.Linear(self.hidden_dims[-1], 128)
-        self.temperature = 0.1  
+        self.cross_attention = GlobalLocalCrossAttention(
+            global_dim=2 * num_hidden,
+            local_dim=self.hidden_dims[-1],
+            dropout=dropout_rate,
+        )
 
     def forward(self, vertex, edge, nh_indices, indices):
         batch_size = len(indices)
@@ -319,22 +321,77 @@ class BiLSTMGraphTransformerModel(nn.Module):
             # print(vertex)
         local_out = vertex[indices]
         # print(local_out)
-        out = torch.cat((global_out, local_out), 1)
-        out = self.linear1(out)
-        out = self.linear2(out)
-        # print(out)
+        global_out, local_out = self.cross_attention(global_out, local_out)
 
-        global_feat = global_out  # [B, 2*num_hidden]
-        local_feat = local_out    # [B, hidden_dims[-1]]
-        
-        combined = torch.cat([global_feat, local_feat], dim=1)
+        combined = torch.cat([global_out, local_out], dim=1)
         out = self.linear1(combined)
         out = self.linear2(out)
-        
-        global_proj = F.normalize(self.global_proj(global_feat), dim=1)
-        local_proj = F.normalize(self.local_proj(local_feat), dim=1)
-        
-        return out, global_proj, local_proj
+
+        return out, global_out, local_out
+
+
+class GlobalLocalCrossAttention(nn.Module):
+    def __init__(self, global_dim, local_dim, attn_dim=128, num_heads=4, dropout=0.1):
+        super(GlobalLocalCrossAttention, self).__init__()
+        if attn_dim % num_heads != 0:
+            raise ValueError("attn_dim must be divisible by num_heads")
+        self.global_q = nn.Linear(global_dim, attn_dim)
+        self.global_kv = nn.Linear(global_dim, attn_dim)
+        self.local_q = nn.Linear(local_dim, attn_dim)
+        self.local_kv = nn.Linear(local_dim, attn_dim)
+        self.global_to_local_attn = nn.MultiheadAttention(
+            attn_dim, num_heads, dropout=dropout, batch_first=True
+        )
+        self.local_to_global_attn = nn.MultiheadAttention(
+            attn_dim, num_heads, dropout=dropout, batch_first=True
+        )
+        self.global_out = nn.Linear(attn_dim, global_dim)
+        self.local_out = nn.Linear(attn_dim, local_dim)
+        self.global_norm = nn.LayerNorm(global_dim)
+        self.local_norm = nn.LayerNorm(local_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def _augmented_neighbors(self, indices, nh_indices, num_nodes):
+        idx_nh = nh_indices.squeeze(-1) if nh_indices.dim() == 3 else nh_indices
+        target_nh = idx_nh[indices]
+        self_idx = indices.unsqueeze(1)
+        neigh = torch.cat([self_idx, target_nh], dim=1)
+        mask = (neigh >= 0) & (neigh < num_nodes)
+        safe_neigh = neigh.clamp(min=0, max=max(num_nodes - 1, 0))
+        return safe_neigh, mask
+
+    def forward(self, global_feat, local_feat, indices=None, nh_indices=None):
+        if indices is None or nh_indices is None:
+            global_q = self.global_q(global_feat).unsqueeze(1)
+            global_kv = self.global_kv(global_feat).unsqueeze(1)
+            local_q = self.local_q(local_feat).unsqueeze(1)
+            local_kv = self.local_kv(local_feat).unsqueeze(1)
+        else:
+            neigh, mask = self._augmented_neighbors(indices, nh_indices, local_feat.size(0))
+            target_global = global_feat[indices]
+            target_local = local_feat[indices]
+            global_q = self.global_q(target_global).unsqueeze(1)
+            local_q = self.local_q(target_local).unsqueeze(1)
+            global_kv = self.global_kv(global_feat)[neigh]
+            local_kv = self.local_kv(local_feat)[neigh]
+
+        key_padding_mask = None if indices is None or nh_indices is None else ~mask
+        global_ctx, _ = self.global_to_local_attn(
+            global_q, local_kv, local_kv, key_padding_mask=key_padding_mask
+        )
+        local_ctx, _ = self.local_to_global_attn(
+            local_q, global_kv, global_kv, key_padding_mask=key_padding_mask
+        )
+
+        base_global = global_feat if indices is None or nh_indices is None else target_global
+        base_local = local_feat if indices is None or nh_indices is None else target_local
+        global_refined = self.global_norm(
+            base_global + self.dropout(self.global_out(global_ctx.squeeze(1)))
+        )
+        local_refined = self.local_norm(
+            base_local + self.dropout(self.local_out(local_ctx.squeeze(1)))
+        )
+        return global_refined, local_refined
 
 class ResidualMLPHead(nn.Module):
     def __init__(self, input_dim, hidden_dim, dropout):
@@ -366,52 +423,69 @@ class BiLSTMNodeEdgeAverageModel(nn.Module):
     def __init__(self):
         super(BiLSTMNodeEdgeAverageModel, self).__init__()
         num_hidden = configs.num_hidden
-        num_layer = configs.num_layer
         dropout_rate = configs.dropout_rate
         feature_dim = configs.feature_dim
+        sequence_dim = getattr(configs, 'sequence_encoder_dim', 2 * num_hidden)
+        self.use_cross_attention = getattr(configs, 'use_cross_attention', False)
+        self.use_contrastive = getattr(configs, 'use_contrastive', False)
         self.hidden_dims = configs.hidden_dim.copy()
         self.hidden_dims.insert(0, feature_dim)
-        self.bilstm = ImprovedBiLSTMAttentionLayer(num_hidden, num_layer,use_transformer=False)
+        expected_sequence_dim = 2 * num_hidden
+        if sequence_dim != expected_sequence_dim:
+            raise ValueError(
+                "sequence_encoder_dim must equal 2 * num_hidden when using HSAE; "
+                "got {} and {}".format(sequence_dim, expected_sequence_dim)
+            )
+        self.sequence_encoder = ImprovedBiLSTMAttentionLayer(
+            num_hidden=num_hidden,
+            num_layers=configs.num_layer,
+            use_bilstm=getattr(configs, 'use_bilstm', True),
+            use_transformer=configs.use_transformer,
+            use_hybrid_pooling=configs.use_hybrid_pooling,
+            transformer_layers=configs.transformer_layers,
+            trans_dropout=dropout_rate,
+            att_dropout=dropout_rate,
+        )
         self.node_edge_avers = nn.ModuleList([NodeEdgeAttentionLayer(self.hidden_dims[i], self.hidden_dims[i + 1], dropout_rate)
                                              for i in range(len(self.hidden_dims[:-1]))])
         self.pred_head = ResidualMLPHead(
-            input_dim=self.hidden_dims[-1] + 2 * num_hidden,
+            input_dim=self.hidden_dims[-1] + sequence_dim,
             hidden_dim=512,
             dropout=dropout_rate
         )
 
-        self.linear1 = nn.Sequential( nn.Linear(self.hidden_dims[-1] + 2 * num_hidden, 512), nn.ReLU(), nn.Dropout(dropout_rate) ) 
-        self.linear2 = nn.Sequential( nn.Linear(512, 1), nn.Dropout(dropout_rate) )
-        self.global_proj = nn.Linear(2 * num_hidden, 128)
-        self.local_proj = nn.Linear(self.hidden_dims[-1], 128)
-        self.temperature = 0.1  
+        if self.use_cross_attention:
+            self.cross_attention = GlobalLocalCrossAttention(
+                global_dim=sequence_dim,
+                local_dim=self.hidden_dims[-1],
+                dropout=dropout_rate,
+            )
+        if self.use_contrastive:
+            self.global_contrastive_proj = nn.Linear(sequence_dim, configs.contrastive_dim)
+            self.local_contrastive_proj = nn.Linear(self.hidden_dims[-1], configs.contrastive_dim)
 
     def forward(self, vertex, edge, nh_indices, indices):
-        batch_size = len(indices)
-        # print(batch_size)
-        global_vertex = vertex.repeat(batch_size, 1, 1)
-        # print(global_vertex)
-        global_out = self.bilstm(global_vertex)
-        # print(global_out)
+        global_tokens = self.sequence_encoder(vertex.unsqueeze(0), return_tokens=True).squeeze(0)
         for i in range(len(self.hidden_dims[:-1])):
             vertex = self.node_edge_avers[i](vertex, edge, nh_indices)
             # print(vertex)
-        local_out = vertex[indices]
+        local_tokens = vertex
         # print(local_out)
-        out = torch.cat((global_out, local_out), 1) 
-        # out = self.linear1(out) 
-        # out = self.linear2(out)
+        if self.use_cross_attention:
+            global_out, local_out = self.cross_attention(global_tokens, local_tokens, indices, nh_indices)
+        else:
+            global_out = global_tokens[indices]
+            local_out = local_tokens[indices]
+
         out = torch.cat((global_out, local_out), 1)
         out = self.pred_head(out)
-        # print(out)
 
-        global_feat = global_out  # [B, 2*num_hidden]
-        local_feat = local_out    # [B, hidden_dims[-1]]
-        
-        global_proj = F.normalize(self.global_proj(global_feat), dim=1)
-        local_proj = F.normalize(self.local_proj(local_feat), dim=1)
-        
-        return out, global_proj, local_proj
+        return out, global_out, local_out
+
+    def contrastive_embeddings(self, global_out, local_out):
+        if not self.use_contrastive:
+            raise RuntimeError("contrastive_embeddings is only available when use_contrastive=True")
+        return self.global_contrastive_proj(global_out), self.local_contrastive_proj(local_out)
     
         
 
@@ -425,7 +499,7 @@ class BiLSTMResCNNNodeEdgeAverageModel(nn.Module):
         feature_dim = configs.feature_dim
 
         self.cnnres = ResCNN(1, 1, window)
-        self.hidden_dims = configs.hidden_dim
+        self.hidden_dims = configs.hidden_dim.copy()
         self.hidden_dims.insert(0, feature_dim)
         self.bilstm = BiLSTMAttentionLayer(num_hidden, num_layer)
         self.node_edge_avers = nn.ModuleList([NodeEdgeAverageLayer(self.hidden_dims[i], self.hidden_dims[i + 1], dropout_rate)

@@ -50,19 +50,33 @@ class ImprovedBiLSTMAttentionLayer(nn.Module):
     Returns:
       tensor of shape [B, 2*num_hidden] (same as original interface).
     """
-    def __init__(self, num_hidden, num_layers, use_transformer=True, trans_dropout=0.1, att_dropout=0.1):
+    def __init__(
+        self,
+        num_hidden,
+        num_layers,
+        use_bilstm=True,
+        use_transformer=True,
+        use_hybrid_pooling=True,
+        transformer_layers=1,
+        trans_dropout=0.1,
+        att_dropout=0.1,
+    ):
         super(ImprovedBiLSTMAttentionLayer, self).__init__()
         self.feature_dim = configs.feature_dim
         self.num_hidden = num_hidden
         self.num_layers = num_layers
         self.d_model = num_hidden * 2  # bidirectional output dim
+        self.use_bilstm = use_bilstm
+        self.use_hybrid_pooling = use_hybrid_pooling
 
-        # BiLSTM encoder (same role as original)
-        self.encoder = nn.LSTM(input_size=self.feature_dim,
-                               hidden_size=num_hidden,
-                               num_layers=num_layers,
-                               batch_first=True,
-                               bidirectional=True)
+        if use_bilstm:
+            self.encoder = nn.LSTM(input_size=self.feature_dim,
+                                   hidden_size=num_hidden,
+                                   num_layers=num_layers,
+                                   batch_first=True,
+                                   bidirectional=True)
+        else:
+            self.input_proj = nn.Linear(self.feature_dim, self.d_model)
 
         # small linear to optionally project LSTM outputs before Transformer (identity if not needed)
         self.project_in = nn.Linear(self.d_model, self.d_model)
@@ -84,7 +98,7 @@ class ImprovedBiLSTMAttentionLayer(nn.Module):
                                                        dropout=trans_dropout,
                                                        activation='relu',
                                                        batch_first=True)
-            self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=1)  # you can stack more if desired
+            self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=transformer_layers)
 
         # LayerNorms for stability
         self.ln_lstm = nn.LayerNorm(self.d_model)
@@ -95,11 +109,13 @@ class ImprovedBiLSTMAttentionLayer(nn.Module):
         self.w_omega = nn.Linear(self.d_model, self.d_model)
         self.u_omega = nn.Linear(self.d_model, 1)
 
-        # Gate to blend attention-pooled vector with mean+max pooling
-        self.gate_proj = nn.Linear(self.d_model * 3, 1)  # inputs: [att_pool, mean_pool, max_pool]
+        # Gate to blend attention-pooled vector with mean+max pooling.
+        self.gate_proj = nn.Linear(self.d_model * 3, 1)
+        self.token_global_gate = nn.Linear(self.d_model * 2, self.d_model)
 
         # final fusion
         self.out_proj = nn.Linear(self.d_model, self.d_model)
+        self.token_out_proj = nn.Linear(self.d_model, self.d_model)
 
         # dropout
         self.dropout = nn.Dropout(att_dropout)
@@ -112,44 +128,116 @@ class ImprovedBiLSTMAttentionLayer(nn.Module):
         if self.u_omega.bias is not None:
             nn.init.constant_(self.u_omega.bias, 0)
 
-    def forward(self, inputs):
+    def _encode_tokens(self, inputs):
         """
         inputs: (B, L, feature_dim)
-        returns: (B, d_model) where d_model == 2 * num_hidden
+        returns: (B, L, d_model) where d_model == 2 * num_hidden
         """
-        # BiLSTM
-        outputs, _ = self.encoder(inputs)  # (B, L, 2*num_hidden)
+        if self.use_bilstm:
+            outputs, _ = self.encoder(inputs)  # (B, L, 2*num_hidden)
+        else:
+            outputs = self.input_proj(inputs)
         outputs = self.ln_lstm(outputs)  # LayerNorm over features
 
-        # optional Transformer self-attention (residual)
         if self.use_transformer:
             proj = self.project_in(outputs)
             trans_out = self.transformer(proj)  # (B, L, d_model)
             trans_out = self.ln_trans(trans_out)
             outputs = outputs + self.dropout(trans_out)  # residual + dropout
+        return outputs
 
-        # Attention pooling (learned)
+    def _pool_tokens(self, outputs):
         u = torch.tanh(self.w_omega(outputs))       # (B, L, d_model)
         att_logits = self.u_omega(u).squeeze(-1)    # (B, L)
         att_score = F.softmax(att_logits, dim=1).unsqueeze(-1)  # (B, L, 1)
         att_pool = torch.sum(outputs * att_score, dim=1)       # (B, d_model)
 
-        # mean + max pooling
-        mean_pool = torch.mean(outputs, dim=1)    # (B, d_model)
-        max_pool, _ = torch.max(outputs, dim=1)   # (B, d_model)
-
-        # gate-based blending of pools
-        combined_cat = torch.cat([att_pool, mean_pool, max_pool], dim=1)  # (B, 3*d_model)
-        gate = torch.sigmoid(self.gate_proj(combined_cat))  # (B, 1)
-        fused = gate * att_pool + (1.0 - gate) * (0.5 * (mean_pool + max_pool))  # (B, d_model)
+        mean_pool = torch.mean(outputs, dim=1)
+        if self.use_hybrid_pooling:
+            max_pool, _ = torch.max(outputs, dim=1)
+            combined_cat = torch.cat([att_pool, mean_pool, max_pool], dim=1)
+            gate = torch.sigmoid(self.gate_proj(combined_cat))
+            fused = gate * att_pool + (1.0 - gate) * (0.5 * (mean_pool + max_pool))
+        else:
+            fused = att_pool
 
         # final projection + residual from mean to stabilize
         out = self.out_proj(fused) + mean_pool
         out = F.relu(out)
         out = self.dropout(out)
-
-        # ensure shape (B, d_model)
         return out
+
+    def forward(self, inputs, return_tokens=False):
+        """
+        inputs: (B, L, feature_dim)
+        pooled output: (B, d_model)
+        token output: (B, L, d_model)
+        """
+        outputs = self._encode_tokens(inputs)
+        pooled = self._pool_tokens(outputs)
+        if not return_tokens:
+            return pooled
+
+        pooled_expanded = pooled.unsqueeze(1).expand(-1, outputs.size(1), -1)
+        gate = torch.sigmoid(self.token_global_gate(torch.cat([outputs, pooled_expanded], dim=-1)))
+        token_out = gate * outputs + (1.0 - gate) * pooled_expanded
+        token_out = self.token_out_proj(token_out) + outputs
+        token_out = F.relu(token_out)
+        return self.dropout(token_out)
+
+
+class TransformerAttentionLayer(nn.Module):
+    """
+    Lightweight sequence encoder used by the revised model.
+
+    It removes the BiLSTM and hybrid mean/max pooling path from the previous
+    HSAE design. A linear input projection is followed by Transformer encoder
+    layers and a single attention pooling head.
+    """
+    def __init__(
+        self,
+        output_dim,
+        transformer_layers=2,
+        dropout=0.1,
+        nhead=None,
+    ):
+        super(TransformerAttentionLayer, self).__init__()
+        self.feature_dim = configs.feature_dim
+        self.output_dim = output_dim
+
+        self.input_proj = nn.Linear(self.feature_dim, output_dim)
+
+        if nhead is None:
+            for candidate in (8, 4, 2, 1):
+                if output_dim % candidate == 0:
+                    nhead = candidate
+                    break
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=output_dim,
+            nhead=nhead,
+            dim_feedforward=output_dim * 4,
+            dropout=dropout,
+            activation='relu',
+            batch_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=transformer_layers)
+        self.norm = nn.LayerNorm(output_dim)
+        self.att_score = nn.Sequential(
+            nn.Linear(output_dim, output_dim),
+            nn.Tanh(),
+            nn.Linear(output_dim, 1),
+        )
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, inputs):
+        x = self.input_proj(inputs)
+        x = self.encoder(x)
+        x = self.norm(x)
+        att_logits = self.att_score(x)
+        att_weight = F.softmax(att_logits, dim=1)
+        pooled = torch.sum(x * att_weight, dim=1)
+        return self.dropout(F.relu(pooled))
 
 
 class ResCNN(nn.Module):
