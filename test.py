@@ -42,12 +42,11 @@ def sigmoid_np(x):
     return 1.0 / (1.0 + np.exp(-x))
 
 
-def test(model, test_graphs, device, i, mx_roc, mx_pr):
+def test(model, test_graphs, device, threshold):
     model.eval()
     all_trues = []
     all_preds = []
 
-    mx = 0
     with torch.no_grad():
         for test_g in test_graphs:
             test_ag_vertex, test_ag_edge, test_ag_nh_indices, test_ag_label, test_ag_indices = graph_to_tensors(test_g, device)
@@ -63,11 +62,9 @@ def test(model, test_graphs, device, i, mx_roc, mx_pr):
     auc_roc = compute_auc_roc(all_trues, all_probs)
     auc_pr = compute_auc_pr(all_trues, all_probs)
     
-    if(auc_roc > mx_roc):
-        mx_roc = auc_roc
-    if(auc_pr > mx_pr):
-        mx_pr = auc_pr
-    f_max, p_max, r_max, t_max, predictions_max = compute_performance(all_trues, all_probs)
+    f_max, p_max, r_max, t_max, predictions_max = compute_performance(
+        all_trues, all_probs, threshold=threshold
+    )
     acc = compute_acc(all_trues, predictions_max)
     recall = compute_recall(all_trues,predictions_max)
     precision = compute_precision(all_trues,predictions_max)
@@ -76,7 +73,21 @@ def test(model, test_graphs, device, i, mx_roc, mx_pr):
     cm = confusion_matrix(all_trues, predictions_max, labels=[0, 1])
     print(cm)
     print(acc, recall,ba,auc_roc, auc_pr, mcc, f_max, p_max, r_max, t_max,precision)
-    return [acc, recall, ba, auc_roc, auc_pr, mcc, f_max, p_max, r_max, t_max,mx_roc,mx_pr]
+    return [acc, recall, ba, auc_roc, auc_pr, mcc, f_max, p_max, r_max, t_max]
+
+
+def load_validation_thresholds(path):
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            'Missing validation thresholds: {}. Run train.py before test.py.'.format(path)
+        )
+
+    thresholds = {}
+    with open(path, 'r', encoding='utf-8', newline='') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            thresholds[str(row['experiment'])] = float(row['validation_f1_threshold'])
+    return thresholds
 
 
 def summarize_results(results):
@@ -98,6 +109,7 @@ if __name__ == '__main__':
     print(device)
 
     test_path = configs.test_dataset_path
+    thresholds_path = os.path.join(configs.save_path, 'validation_thresholds.csv')
 
     with open(test_path, 'rb') as f:
         test_data = pickle.load(f,encoding='latin1')
@@ -105,18 +117,30 @@ if __name__ == '__main__':
     from utils import propress_data
     propress_data(test_data)
 
+    thresholds = load_validation_thresholds(thresholds_path)
+
     with open(os.path.join(configs.save_path, 'results.csv'), 'w', encoding='utf-8', newline='') as f:
         csv_writer = csv.writer(f)
-        csv_writer.writerow(['seed', 'acc', 'recall','ba','auc_roc', 'auc_pr', 'mcc', 'f_max', 'p_max', 'r_max', 't_max', 'mx_roc', 'mx_pr'])
-    mx_pr,mx_roc = 0,0
+        csv_writer.writerow(['experiment', 'seed', 'acc', 'recall','ba','auc_roc', 'auc_pr', 'mcc', 'f1', 'precision', 'recall_at_threshold', 'validation_threshold'])
     all_results = []
-    for i, seed in enumerate(configs.seeds):
-        print('experiment:', i + 1)
+    if configs.use_k_fold:
+        experiments = [
+            ('seed{}_fold{}'.format(seed, fold_idx), seed)
+            for fold_idx, seed in enumerate(configs.seeds[:configs.k_folds], start=1)
+        ]
+    else:
+        experiments = [(str(i + 1), seed) for i, seed in enumerate(configs.seeds)]
+
+    for experiment_id, seed in experiments:
+        print('experiment:', experiment_id)
         test_model = BiLSTMNodeEdgeAverageModel().to(device)
-        test_model_path = os.path.join(configs.save_path, 'model{}.tar'.format(i + 1))
+        test_model_path = os.path.join(configs.save_path, 'model{}.tar'.format(experiment_id))
         if not os.path.exists(test_model_path):
             print('missing checkpoint:', test_model_path)
             continue
+
+        if experiment_id not in thresholds:
+            raise KeyError('Missing validation threshold for experiment {}'.format(experiment_id))
 
         test_model_sd = torch.load(test_model_path, map_location=device)
         try:
@@ -126,13 +150,17 @@ if __name__ == '__main__':
             print(exc)
             continue
 
-        experiment_results = test(test_model, test_data, device, i, mx_roc, mx_pr)
-        [mx_roc,mx_pr] = experiment_results[10: 12]
-        all_results.append(experiment_results[:10])
+        experiment_results = test(
+            test_model,
+            test_data,
+            device,
+            thresholds[experiment_id],
+        )
+        all_results.append(experiment_results)
     
         with open(os.path.join(configs.save_path, 'results.csv'), 'a+', encoding='utf-8', newline='') as f:
             csv_writer = csv.writer(f)
-            csv_writer.writerow([seed] + experiment_results)
+            csv_writer.writerow([experiment_id, seed] + experiment_results)
 
     if all_results:
         with open(os.path.join(configs.save_path, 'results_summary.csv'), 'w', encoding='utf-8', newline='') as f:

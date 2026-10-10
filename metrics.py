@@ -51,9 +51,19 @@ def computer_ss(labels, preds):
     print('Sensitivity:', TP / float(TP + FN))
     print('Specificity:', TN / float(TN + FP))
 
-def compute_performance(labels, preds):
+def compute_performance(labels, preds, threshold=None):
     labels = labels.flatten()
     preds = preds.flatten()
+
+    if threshold is not None:
+        threshold = float(threshold)
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError('threshold must be between 0 and 1')
+        predictions = (preds > threshold).astype(np.int32)
+        precision = precision_score(labels, predictions, zero_division=0)
+        recall = recall_score(labels, predictions, zero_division=0)
+        f_score = f1_score(labels, predictions, zero_division=0)
+        return f_score, precision, recall, threshold, predictions
 
     predictions_max = None
     f_max = 0

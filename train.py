@@ -66,13 +66,13 @@ def contrastive_weight(epoch_index, total_epochs):
     return configs.contrastive_initial_weight * math.exp(-configs.contrastive_decay_rate * progress)
 
 
-def evaluate(model, test_graphs, device):
+def evaluate(model, graphs, device, threshold=None):
     model.eval()
     all_trues = []
     all_preds = []
     with torch.no_grad():
-        for test_g in test_graphs:
-            vertex, edge, nh_indices, labels, indices = graph_to_tensors(test_g, device)
+        for graph in graphs:
+            vertex, edge, nh_indices, labels, indices = graph_to_tensors(graph, device)
             preds, _, _ = model(vertex, edge, nh_indices, indices)
             all_preds.append(preds.detach().cpu().numpy())
             all_trues.append(labels[:, 1].detach().cpu().numpy())
@@ -83,7 +83,9 @@ def evaluate(model, test_graphs, device):
 
     auc_roc = compute_auc_roc(all_trues, all_probs)
     auc_pr = compute_auc_pr(all_trues, all_probs)
-    f_max, p_max, r_max, t_max, predictions_max = compute_performance(all_trues, all_probs)
+    f_max, p_max, r_max, t_max, predictions_max = compute_performance(
+        all_trues, all_probs, threshold=threshold
+    )
     return {
         'acc': compute_acc(all_trues, predictions_max),
         'recall': compute_recall(all_trues, predictions_max),
@@ -203,6 +205,18 @@ def append_result(path, experiment, seed, fold, train_size, val_size, test_size,
     with open(path, 'a+', encoding='utf-8', newline='') as f:
         writer = csv.writer(f)
         writer.writerow([experiment, seed, fold, train_size, val_size, test_size] + [result[name] for name in metric_names])
+
+
+def write_thresholds_header(path):
+    with open(path, 'w', encoding='utf-8', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['experiment', 'seed', 'fold', 'validation_f1_threshold'])
+
+
+def append_threshold(path, experiment, seed, fold, threshold):
+    with open(path, 'a+', encoding='utf-8', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([experiment, seed, fold, threshold])
 
 
 def write_summary(path, results):
@@ -417,7 +431,9 @@ if __name__ == '__main__':
     results_path = os.path.join(configs.save_path, 'results.csv')
     summary_path = os.path.join(configs.save_path, 'results_summary.csv')
     fold_summary_path = os.path.join(configs.save_path, 'results_by_fold_summary.csv')
+    thresholds_path = os.path.join(configs.save_path, 'validation_thresholds.csv')
     write_results_header(results_path)
+    write_thresholds_header(thresholds_path)
 
     current_experiment = 1
     all_results = []
@@ -474,7 +490,17 @@ if __name__ == '__main__':
             checkpoint_path = os.path.join(configs.save_path, 'model{}.tar'.format(experiment_id))
             eval_model = BiLSTMNodeEdgeAverageModel().to(device)
             eval_model.load_state_dict(torch.load(checkpoint_path, map_location=device))
-            result = evaluate(eval_model, test_data, device)
+            validation_result = evaluate(eval_model, fold_val_data, device)
+            validation_threshold = validation_result['t_max']
+            append_threshold(
+                thresholds_path,
+                experiment_id,
+                seed,
+                fold_idx,
+                validation_threshold,
+            )
+            print('validation-selected threshold:', validation_threshold)
+            result = evaluate(eval_model, test_data, device, threshold=validation_threshold)
             print('test result:', result)
             append_result(
                 results_path,
@@ -506,7 +532,17 @@ if __name__ == '__main__':
             checkpoint_path = os.path.join(configs.save_path, 'model{}.tar'.format(current_experiment))
             eval_model = BiLSTMNodeEdgeAverageModel().to(device)
             eval_model.load_state_dict(torch.load(checkpoint_path, map_location=device))
-            result = evaluate(eval_model, test_data, device)
+            validation_result = evaluate(eval_model, val_data, device)
+            validation_threshold = validation_result['t_max']
+            append_threshold(
+                thresholds_path,
+                current_experiment,
+                seed,
+                '',
+                validation_threshold,
+            )
+            print('validation-selected threshold:', validation_threshold)
+            result = evaluate(eval_model, test_data, device, threshold=validation_threshold)
             print('test result:', result)
             append_result(
                 results_path,
